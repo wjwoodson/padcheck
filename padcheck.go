@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"crypto/sha1"
 	"crypto/tls"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -59,6 +58,9 @@ func cbcSuiteByID(id uint16) *cbcSuite {
 }
 
 func SupportedCipherTest(hostname, serverName string, supportedCiphers []uint16, maxVersion uint16) (availableCipher *cbcSuite, protocolVersion uint16, err error) {
+
+	fmt.Printf("Connecting to %s ...\n", serverName)
+
 	dialer := net.Dialer{
 		Timeout: 5 * time.Second,
 	}
@@ -241,6 +243,7 @@ func testCipher(hostname, serverName string, cipherId, protocolVersion uint16) (
 }
 
 func analyzeResponseProfile(hostname, serverName string, responseLengths [testCount]int, responseSizeProfile, errorStrings [testCount]string) (isVulnerable, isPoodle, isGoldenDoodle, isZombiePoodle, isZeroLength, isObservable bool, errorPrint, lengthPrint string, err error) {
+
 	// Decrypted response length should be zero for all tests
 	for i := 0; i < testCount; i++ {
 		if responseLengths[i] > 0 {
@@ -256,6 +259,11 @@ func analyzeResponseProfile(hostname, serverName string, responseLengths [testCo
 			}
 		}
 	}
+
+	fmt.Printf("\tisVulnerable: %t\n", isVulnerable)
+	fmt.Printf("\tisObservable: %t\n", isObservable)
+	fmt.Printf("\tisGoldenDoodle: %t\n", isGoldenDoodle)
+	fmt.Printf("\tisPoodle: %t\n", isPoodle)
 
 	var uniqueErrorCount int
 	var messageHeader string
@@ -329,7 +337,7 @@ func scanHost(hostname, serverName string, cipherIndex int) error {
 		tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256,
 		tls.TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256,
 	}
-	cipherList := []uint16 {allCiphers[cipherIndex]};
+	cipherList := []uint16{allCiphers[cipherIndex]}
 
 	availableCipher, availableProtocol, err := SupportedCipherTest(hostname, serverName, cipherList, 0x0303)
 	if err != nil {
@@ -343,11 +351,8 @@ func scanHost(hostname, serverName string, cipherIndex int) error {
 	}
 
 	var (
-		lastErrorPrint, lastLengthPrint                                                    string
-		isVulnerable, isPoodle, isGoldenDoodle, isZombiePoodle, isObservable, isZeroLength bool
-		errorPrint, lengthPrint                                                            string
-		responseLengths                                                                    [testCount]int
-		responseSizeProfile, errorStrings                                                  [testCount]string
+		responseLengths                   [testCount]int
+		responseSizeProfile, errorStrings [testCount]string
 	)
 
 	for iteration := 0; iteration < *iterationCount; iteration++ {
@@ -362,75 +367,8 @@ func scanHost(hostname, serverName string, cipherIndex int) error {
 		}
 
 		// Analyze the response profile for oracles
-		isVulnerable, isPoodle, isGoldenDoodle, isZombiePoodle, isZeroLength, isObservable, errorPrint, lengthPrint, err = analyzeResponseProfile(hostname, serverName, responseLengths, responseSizeProfile, errorStrings)
+		analyzeResponseProfile(hostname, serverName, responseLengths, responseSizeProfile, errorStrings)
 
-		if isVulnerable != true {
-			if iteration > 0 {
-				if *verboseLevel > 0 {
-					fmt.Printf("%s (%s) exhibited an oracle which did not appear on iteration %d. (Not exploitable)\n", serverName, hostname, iteration)
-				}
-				return errors.New("Oracle disappeared")
-			}
-			return nil
-		}
-
-		if lastErrorPrint != "" {
-			if lastErrorPrint != errorPrint {
-				if *verboseLevel > 0 {
-					fmt.Printf("%s (%s) has an inconsistent error oracle response. (Maybe exploitable)\n", serverName, hostname)
-				}
-				return errors.New("Inconsistent error responses")
-			}
-		} else {
-			lastErrorPrint = errorPrint
-		}
-
-		if lastLengthPrint != "" {
-			if lastLengthPrint != lengthPrint {
-				if *verboseLevel > 0 {
-					fmt.Printf("%s (%s) has an inconsistent response length profile\n (Maybe exploitable)", serverName, hostname)
-				}
-				return errors.New("Inconsistent length responses")
-			}
-		} else {
-			lastLengthPrint = lengthPrint
-		}
-	}
-
-	if isVulnerable {
-		var vulnTag string
-		if isObservable {
-			vulnTag = "Observable "
-		}
-		if isGoldenDoodle {
-			vulnTag += "Padding Validity (GOLDENDOODLE)"
-		} else if isZombiePoodle {
-			vulnTag += "MAC Validity (Zombie POODLE)"
-		} else if isPoodle {
-			vulnTag += "MAC validity (POODLE or 'sleeping' POODLE)"
-		} else if isZeroLength {
-			vulnTag += "Incomplete or Missing MAC"
-		} else {
-			vulnTag += "unkown"
-		}
-
-		respLenTag := strings.Join(responseSizeProfile[:], "/")
-		respLenRaw := fmt.Sprintf("%v/%v/%v/%v", responseLengths[0], responseLengths[1], responseLengths[2], responseLengths[3])
-		errMsgTag := strings.Join(errorStrings[:], "/")
-		shortPrint := errorPrint[0:3] + lengthPrint[0:3]
-
-		fmt.Printf("%s (%s) is VULNERABLE with a %s oracle when using cipher 0x%04x with TLS 0x%04x. The fingerprint is %s\n", serverName, hostname, vulnTag, availableCipher.id, availableProtocol, shortPrint)
-		if *verboseLevel <= 1 {
-			fmt.Printf("%s (%s) error profile: ^%v^ and response size profile ^%v^\n", serverName, hostname, errMsgTag, respLenTag)
-		} else {
-			fmt.Printf("The following responses were observed:\n")
-			fmt.Printf("\tLengths:%s(%s)\n\tErrors:%s\n", respLenRaw, respLenTag, errMsgTag)
-			fmt.Printf("\tLength Hash:%v\n\tError Hash:%v\n", lengthPrint, errorPrint)
-		}
-	} else {
-		if *verboseLevel > 0 {
-			fmt.Printf("%s (%s) behaves securely\n", serverName, hostname)
-		}
 	}
 
 	return nil
